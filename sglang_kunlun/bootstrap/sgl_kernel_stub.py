@@ -214,5 +214,20 @@ def install() -> None:
         module.rmsnorm = _rmsnorm  # type: ignore[attr-defined]
         module.silu_and_mul = _silu_and_mul  # type: ignore[attr-defined]
 
+    # HiCache L1<->L2 transfer. Upstream MLATokenToKVPoolHost (DSA full KV) and
+    # MambaPoolHost (KDA state) import these from sgl_kernel.kvcacheio and, in
+    # the layer_first/kernel path, call them with token-granular indices +
+    # single-token item_size -- exactly the xspeedgate_ops contract. Binding the
+    # Kunlun wrappers here (pre-shim, before mla.py/mamba.py import) makes both
+    # host pools' backup/load work without any per-pool hook.
+    from sglang_kunlun.kernels.sgl_kernel_kunlun.kvcacheio import (
+        transfer_kv_all_layer_mla as _transfer_kv_all_layer_mla,
+        transfer_kv_per_layer_mla as _transfer_kv_per_layer_mla,
+    )
+
+    for module in (root, sys.modules["sgl_kernel.kvcacheio"]):
+        module.transfer_kv_all_layer_mla = _transfer_kv_all_layer_mla  # type: ignore[attr-defined]
+        module.transfer_kv_per_layer_mla = _transfer_kv_per_layer_mla  # type: ignore[attr-defined]
+
     # Register custom op schemas so @torch.library.register_fake succeeds.
     _define_custom_ops()
