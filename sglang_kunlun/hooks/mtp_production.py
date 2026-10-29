@@ -277,6 +277,12 @@ def resolve_spec_v2_tokens_kunlun(self, result, batch):
     assert stride > 0
     assert len(next_token_ids) >= len(batch.reqs) * stride
 
+    # Idempotent: with overlap scheduling the grammar barrier has already advanced
+    # the FSM for this result inside verify(); advancing again would accept the
+    # same run twice.
+    if any(request.grammar is not None for request in batch.reqs):
+        self.advance_grammar_fsm(result, batch)
+
     predict_tokens = []
     for index, request in enumerate(batch.reqs):
         row = next_token_ids[index * stride : (index + 1) * stride]
@@ -288,7 +294,15 @@ def resolve_spec_v2_tokens_kunlun(self, result, batch):
             pass
         else:
             if request.grammar is not None:
-                accepted_tokens = self._accept_grammar_tokens(request, accepted_tokens)
+                # Reuse the run advance_grammar_fsm already accepted; accepting it
+                # again rejects the second pass and aborts the request.
+                retained = result.grammar_retained_tokens
+                if retained is not None and retained[index] is not None:
+                    accepted_tokens = retained[index]
+                else:
+                    accepted_tokens = self._accept_grammar_tokens(
+                        request, accepted_tokens
+                    )
 
             # Commit the full accepted run (drafts + bonus). Upstream keeps
             # kv_committed_len honest; eagle_prepare_for_decode rounds the
