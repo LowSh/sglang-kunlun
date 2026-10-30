@@ -135,7 +135,7 @@ unset SGLANG_PLATFORM SGLANG_USE_XPU
 Then start the server:
 
 ```bash
-SGLANG_ENABLE_SPEC_V2=1 
+SGLANG_ENABLE_SPEC_V2=1
 python3 -u -m sglang.launch_server \
     --model-path /home/models/MiMo-V2-Flash-W8A8-INT8-Dynamic-official \
     --speculative-algorithm EAGLE \
@@ -179,6 +179,77 @@ curl http://localhost:8806/v1/chat/completions \
     "max_tokens": 512
   }'
 ```
+
+---
+
+## Measured Tuning Notes: DeepSeek-V4-Flash on P900
+
+Findings from a parameter sweep on Kunlunxin P900, contributed for reference.
+These are measurements, not a recommended configuration: the absolute values are
+specific to our hardware and model, so treat them as starting points and the
+mechanisms as the transferable part. See the version note at the end of the
+section before quoting any percentage.
+
+### 1. Per-rank decode batch has a knee around 80
+
+Raising the per-rank decode batch from 32 to 80 gave **+25.7% output tok/s and
+-32% J/output-token**. Past the knee the return collapses: 128 added only about
+4% more throughput while TPOT worsened by 53%. If you are sizing
+`--cuda-graph-max-bs-decode` and `--max-running-requests` for throughput rather
+than for single-stream latency, the useful range ends near the knee.
+
+### 2. A measured expert layout is worth a few percent
+
+`--init-expert-location` defaults to `trivial`. Replacing it with a layout
+derived from observed expert load gave **+3-7% prefill input tok/s** (median
+about 5%, same sign across three rounds).
+
+### 3. `--chunked-prefill-size` is a per-attention-DP-rank budget
+
+With data-parallel attention enabled, the value you pass is not the global chunk
+size: it is divided across attention DP ranks, and the startup log prints the
+per-rank number, not the number you typed. Upstream states the same unit in its
+own validation message ("tokens per attention DP rank"). So to land on a target
+global chunk, pass `target * dp_size`, and keep the per-rank quotient a whole
+number of pages.
+
+### 4. `--mem-fraction-static` has to be chosen per phase
+
+On our 4-card configuration (84.90 GB of weights per card) the workable window
+was narrow and phase-dependent:
+
+| Value | Result |
+| --- | --- |
+| below 0.88 | the static pool cannot hold the weights |
+| 0.90 | what we used for pure-prefill workloads |
+| 0.92 | fine for decode, but a pure-prefill run hit OOM on its first real prefill, in the normal-mode MoE buffer |
+| above 0.94 | the DeepEP buffer cannot get memory |
+
+A value that is stable in decode is therefore not automatically safe for a
+prefill-heavy deployment.
+
+### 5. Pass `--kv-cache-dtype` explicitly
+
+The default `auto` is rewritten to `fp8_e4m3` by the upstream DeepSeek-V4
+override, and this plugin's pack kernel rejects it
+(`NotImplementedError: Only support bf16/fp16 by now.`). Pass `bfloat16`,
+`float16`, or `half`.
+
+### Version note for the numbers above
+
+The percentages in items 1 and 2 were measured on
+`hac_test/aiak-inference-sglang:p800_wangzhihui07_20260817_095734` and have
+**not** been re-measured on SGLang 0.5.17 or later. Method: 20 s warmup plus
+30 s measurement per cell, throughput taken as an explicit windowed difference
+of `generation_tokens_total` in the steady-state middle of the run, power
+sampled over exactly the same window, three repeats per cell, `retract` zero
+throughout.
+
+One caveat on combining them: enabling the measured expert layout and two-batch
+overlap together was measured at +14.7% (95% CI +11.4-18.0%). Both the linear
+sum (+11.3%) and the compounded product (+16.6%) fall inside that interval, so
+the data cannot distinguish the two. **Do not multiply ratios measured in
+different deployments** - quote them separately.
 
 ---
 
