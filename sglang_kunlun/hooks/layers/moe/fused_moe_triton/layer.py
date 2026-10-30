@@ -37,14 +37,10 @@ from sglang.srt.plugins.hook_registry import HookType, plugin_hook
 )
 def create_moe_dispatcher_kunlun(moe_runner_config):
     """Kunlun MoE dispatcher selection."""
-    from sglang.srt.batch_overlap.two_batch_overlap import (
-        MaybeTboDeepEPDispatcher,
-    )
+    from sglang.srt.batch_overlap.two_batch_overlap import MaybeTboDeepEPDispatcher
     from sglang.srt.distributed import get_tp_group
     from sglang.srt.layers.moe import get_deepep_mode, get_moe_a2a_backend
-    from sglang.srt.layers.moe.token_dispatcher.standard import (
-        StandardDispatcher,
-    )
+    from sglang.srt.layers.moe.token_dispatcher.standard import StandardDispatcher
 
     a2a_backend = get_moe_a2a_backend()
     if a2a_backend.is_none():
@@ -60,7 +56,7 @@ def create_moe_dispatcher_kunlun(moe_runner_config):
             params_dtype=moe_runner_config.params_dtype,
             deepep_mode=get_deepep_mode(),
             async_finish=True,
-            return_recv_hook=get_deepep_mode().is_normal(), # tbo暂时不支持
+            return_recv_hook=get_deepep_mode().is_normal(),  # tbo暂时不支持
         )
     if a2a_backend.is_ascend_fuseep():
         from sglang.srt.layers.moe.token_dispatcher import NpuFuseEPDispatcher
@@ -75,7 +71,6 @@ def create_moe_dispatcher_kunlun(moe_runner_config):
             params_dtype=moe_runner_config.params_dtype,
         )
     raise NotImplementedError(f"Unsupported a2a backend: {a2a_backend}")
-
 
 
 @plugin_hook(

@@ -16,6 +16,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """Kunlun plugin hooks for ``sglang.srt.layers.moe.token_dispatcher.deepep``."""
+
 from __future__ import annotations
 
 import logging
@@ -25,7 +26,6 @@ from typing import TYPE_CHECKING, List, NamedTuple, Optional, Tuple, Union
 
 from sglang.srt.environ import envs
 from sglang.srt.eplb.expert_distribution import get_global_expert_distribution_recorder
-from sglang.srt.layers import deep_gemm_wrapper
 from sglang.srt.layers.dp_attention import get_is_extend_in_batch
 from sglang.srt.layers.moe.token_dispatcher.base import (
     BaseDispatcher,
@@ -37,18 +37,8 @@ from sglang.srt.layers.moe.token_dispatcher.base import (
     DispatchOutputFormat,
 )
 from sglang.srt.layers.moe.topk import TopKOutput
-from sglang.srt.layers.moe.utils import (
-    DeepEPMode,
-    get_deepep_config,
-    get_moe_runner_backend,
-    is_tbo_enabled,
-)
-from sglang.srt.utils import (
-    get_bool_env_var,
-    is_blackwell,
-    load_json_config,
-)
-
+from sglang.srt.layers.moe.utils import DeepEPMode, get_deepep_config, is_tbo_enabled
+from sglang.srt.utils import is_blackwell, load_json_config
 
 if TYPE_CHECKING:
     from sglang.srt.batch_overlap.single_batch_overlap import CombineOverlapArgs
@@ -56,7 +46,7 @@ if TYPE_CHECKING:
 try:
     from deep_ep import Config
     from deep_ep.buffer_v2 import BufferV2 as Buffer
-    from sglang.srt.layers.quantization.fp8_kernel import (
+    from sglang.srt.layers.quantization.fp8_kernel import (  # noqa: F401
         sglang_per_token_group_quant_fp8,
     )
 
@@ -68,7 +58,6 @@ from enum import Enum, IntEnum, auto
 
 import torch
 import torch.distributed as dist
-
 from sglang.srt.plugins.hook_registry import HookType, plugin_hook
 
 logger = logging.getLogger(__name__)
@@ -149,12 +138,14 @@ assert isinstance(DeepEPLLCombineInput, CombineInput)
 
 class DeepEPDispatchMode(IntEnum):
     """DeepEPDispatchMode"""
+
     NORMAL = auto()
     LOW_LATENCY = auto()
 
 
 class DeepEPBuffer:
     """DeepEPBuffer"""
+
     _buffer = None
     _dispatch_mode: Optional[DeepEPDispatchMode] = None
     _hidden_size: Optional[int] = None
@@ -239,7 +230,7 @@ class DeepEPBuffer:
                 f"This may result in highly suboptimal performance. "
                 f"Consider using --deepep-config to change the behavior."
             )
-        
+
         cls._buffer = Buffer(
             group,
             num_nvl_bytes,
@@ -250,7 +241,7 @@ class DeepEPBuffer:
             allow_mnnvl=True,
             num_experts=num_experts,
         )
-        
+
         return cls._buffer
 
     @classmethod
@@ -293,6 +284,7 @@ class DeepEPBuffer:
 )
 class DeepEPConfig(BaseDispatcherConfig):
     """Kunlun DeepEP dispatcher configuration."""
+
     _instance = None
 
     def __init__(self):
@@ -324,6 +316,7 @@ class DeepEPConfig(BaseDispatcherConfig):
 
 class _DeepEPDispatcherImplBase:
     """_DeepEPDispatcherImplBase"""
+
     def __init__(
         self,
         group: torch.distributed.ProcessGroup,
@@ -414,6 +407,7 @@ class _DeepEPDispatcherImplBase:
 
 class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
     """_DeepEPDispatcherImplNormal"""
+
     def __init__(self, async_finish: bool, **kwargs):
         super().__init__(**kwargs)
 
@@ -428,27 +422,25 @@ class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
     ):
         """dispatch_a"""
         topk_weights, topk_ids = topk_output.topk_weights, topk_output.topk_ids
-        
+
         import kunlun_ops
+
         topk_ids = topk_ids.to(torch.int32)
         num_tokens, hidden_size = hidden_states.shape
         hidden_states_int8 = torch.empty(
-                num_tokens,
-                hidden_size,
-                device='cuda',
-                dtype=torch.int8
+            num_tokens, hidden_size, device="cuda", dtype=torch.int8
         )
         hidden_states_scale = torch.empty(
-                num_tokens,
-                1,
-                device='cuda',
-                dtype=torch.float32,
-        ) # can't be col major
+            num_tokens,
+            1,
+            device="cuda",
+            dtype=torch.float32,
+        )  # can't be col major
         if num_tokens > 0:
             kunlun_ops.quant2d(hidden_states, hidden_states_int8, hidden_states_scale)
         x_to_dispatch = (hidden_states_int8, hidden_states_scale)
         hidden_states = x_to_dispatch
-        
+
         previous_event = Buffer.capture() if self.async_finish else None
         return hidden_states, topk_ids, topk_weights, previous_event
 
@@ -490,7 +482,7 @@ class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
         num_tokens_per_rdma_rank = None
         num_tokens_per_expert = None
         is_token_in_rank = None
-        
+
         # FIXME: `handle` should be transmitted with tokens from dispatch to combine.
         # However, doing this would incur an unknown synchronization error, but keeping
         # `handle` as a member variable works.
@@ -579,6 +571,7 @@ class _DeepEPDispatcherImplNormal(_DeepEPDispatcherImplBase):
 
 class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
     """_DeepEPDispatcherImplLowLatency"""
+
     def __init__(self, return_recv_hook: bool, **kwargs):
         super().__init__(**kwargs)
 
@@ -589,7 +582,7 @@ class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
         self.return_recv_hook = return_recv_hook
         self.device_module = torch.get_device_module()
         self.quant_config = {}
-        buffer = self._get_buffer()
+        self._get_buffer()
 
     def dispatch_a(
         self,
@@ -636,7 +629,7 @@ class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
         hook,
     ):
         """dispatch_b"""
-        hook() if self.return_recv_hook else () #event.current_stream_wait()
+        hook() if self.return_recv_hook else ()  # event.current_stream_wait()
 
         get_global_expert_distribution_recorder().on_deepep_dispatch_low_latency(
             masked_m
@@ -666,7 +659,7 @@ class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
         use_nvfp4 = use_fp8 = False
         input_global_scale = self.quant_config.get("input_global_scale", None)
         if input_global_scale is not None:
-            use_nvfp4 = True
+            use_nvfp4 = True  # noqa: F841
         elif not envs.SGLANG_DEEPEP_BF16_DISPATCH.get():
             use_fp8 = True
 
@@ -710,7 +703,7 @@ class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
         if overlap_args is not None:
             overlap_args.stream.wait_stream(self.device_module.current_stream())
 
-        hook() if self.return_recv_hook else () #event.current_stream_wait()
+        hook() if self.return_recv_hook else ()  # event.current_stream_wait()
 
         if overlap_args is not None:
             self.device_module.current_stream().wait_stream(overlap_args.stream)
@@ -770,8 +763,11 @@ class _DeepEPDispatcherImplLowLatency(_DeepEPDispatcherImplBase):
             )
 
         self.packed_recv_count = self.handle = None
-        if self.params_dtype is not None and isinstance(combined_hidden_states, torch.Tensor) \
-                and combined_hidden_states.dtype != self.params_dtype:
+        if (
+            self.params_dtype is not None
+            and isinstance(combined_hidden_states, torch.Tensor)
+            and combined_hidden_states.dtype != self.params_dtype
+        ):
             combined_hidden_states = combined_hidden_states.to(self.params_dtype)
         return combined_hidden_states, hook
 
@@ -802,6 +798,7 @@ class _Stage(Enum):
 )
 class DeepEPDispatcher(BaseDispatcher):
     """Kunlun DeepEP dispatcher implementation."""
+
     def __init__(
         self,
         group: torch.distributed.ProcessGroup,
